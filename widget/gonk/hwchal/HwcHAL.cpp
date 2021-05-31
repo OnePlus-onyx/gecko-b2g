@@ -108,7 +108,8 @@ UniquePtr<HwcHALBase> HwcHALBase::CreateHwcHAL() {
 
 extern "C" MOZ_EXPORT __attribute__((weak)) HWC2::Display* hwc2_getDisplayById(
     HWC2::Device* p, hwc2_display_t id) {
-  return p->getDisplayById(id);
+    ALOGI("####test ----------> HW2_libcarthage get a response: display %" PRIu64, id);
+    return p->getDisplayById(1);
 }
 
 extern "C" MOZ_EXPORT __attribute__((weak)) void hwc2_registerCallback(
