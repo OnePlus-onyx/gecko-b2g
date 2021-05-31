@@ -155,7 +155,7 @@ GonkDisplayP::GonkDisplayP()
 
   std::unique_lock<std::mutex> lock(hotplugMutex);
   HWC2::Display* hwcDisplay;
-  while (!(hwcDisplay = mHwc->getDisplayById(HWC_DISPLAY_PRIMARY))) {
+  while (!(hwcDisplay = mHwc->getDisplayById(1))) {
     /* Wait at most 5s for hotplug events */
     hotplugCv.wait_for(lock, std::chrono::seconds(5));
   }
@@ -186,7 +186,7 @@ GonkDisplayP::GonkDisplayP()
     /* The emulator actually reports RGBA_8888, but EGL doesn't return
      * any matching configuration. We force RGBX here to fix it. */
     /*TODO: need to discuss with vendor to check this format issue.*/
-    dispData.mSurfaceformat = HAL_PIXEL_FORMAT_RGB_565;
+    dispData.mSurfaceformat = HAL_PIXEL_FORMAT_RGBA_8888;
   }
   (void)hwcDisplay->createLayer(&mlayer);
 
@@ -200,7 +200,7 @@ GonkDisplayP::GonkDisplayP()
   (void)mPowerModule;
 
   ALOGI("created native window\n");
-  native_gralloc_initialize(1);
+  native_gralloc_initialize(0);
 
   mPower = IPower::getService();
   if (mPower == nullptr) {
