@@ -632,6 +632,12 @@ class BluetoothAvrcpNotificationHandler {
 
   virtual void PassthroughCmdNotification(uint8_t aId, uint8_t aKeyState);
 
+  virtual void SetAddressedPlayerNotification(uint16_t aPlayerId);
+
+  virtual void GetFolderItemsNotification(uint8_t aScope, uint32_t aStartItem,
+                                          uint32_t aEndItem, uint8_t aNumAttr,
+                                          const uint32_t* aAttrIds);
+
  protected:
   BluetoothAvrcpNotificationHandler();
   virtual ~BluetoothAvrcpNotificationHandler();
@@ -658,6 +664,9 @@ class BluetoothAvrcpResultHandler
   virtual void RegisterNotificationRsp();
 
   virtual void SetVolume();
+
+  virtual void SetAddressedPlayerRsp();
+  virtual void GetFolderItemsListRsp();
 
  protected:
   virtual ~BluetoothAvrcpResultHandler() {}
@@ -705,6 +714,14 @@ class BluetoothAvrcpInterface {
 
   virtual void SetVolume(uint8_t aVolume,
                          BluetoothAvrcpResultHandler* aRes) = 0;
+
+  virtual void SetAddressedPlayerRsp(BluetoothAvrcpStatus aRspStatus,
+                                     BluetoothAvrcpResultHandler* aRes) = 0;
+
+  virtual void GetFolderItemsListRsp(
+      BluetoothAvrcpStatus aRspStatus, uint16_t aUidCounter, uint8_t aNumItems,
+      const nsTArray<BluetoothAvrcpItemPlayer>& aPlayers,
+      BluetoothAvrcpResultHandler* aRes) = 0;
 
  protected:
   BluetoothAvrcpInterface();

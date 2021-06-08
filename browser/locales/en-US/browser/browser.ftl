@@ -180,10 +180,6 @@ full-screen-exit =
 # the Urlbar and searchbar.
 search-one-offs-with-title = This time, search with:
 
-# This string won't wrap, so if the translated string is longer,
-# consider translating it as if it said only "Search Settings".
-search-one-offs-change-settings-button =
-    .label = Change Search Settings
 search-one-offs-change-settings-compact-button =
     .tooltiptext = Change search settings
 
@@ -636,6 +632,12 @@ library-recent-activity-title =
 save-to-pocket-button =
   .label = Save to { -pocket-brand-name }
   .tooltiptext = Save to { -pocket-brand-name }
+
+## Repair text encoding toolbar button
+
+repair-text-encoding-button =
+  .label = Repair text encoding
+  .tooltiptext = Guess correct text encoding from page content
 
 ## Customize Toolbar Buttons
 

@@ -6,11 +6,12 @@
 use crate::adopt_current_thread;
 use crate::common::core::{BaseMessage, BaseMessageKind};
 use crate::common::frame::{Error as FrameError, Frame};
+use crate::common::sidl_task::{SidlRunnable, SidlTask};
 use crate::common::traits::Shared;
 use bincode::Options;
 use log::{debug, error, info};
-use moz_task::{Task, TaskRunnable, ThreadPtrHandle};
-use nserror::{nsresult, NS_OK};
+use moz_task::ThreadPtrHandle;
+use nserror::NS_OK;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
@@ -104,32 +105,32 @@ struct ConnectionChangeTask {
     observer: ThreadPtrHandle<nsISidlConnectionObserver>,
 }
 
-impl Task for ConnectionChangeTask {
+impl SidlTask for ConnectionChangeTask {
     fn run(&self) {
         info!(
             "Running ConnectionChangeTask disconnected=`{}`",
             self.disconnected
         );
 
-        let result = unsafe {
-            if self.disconnected {
-                self.observer.get().unwrap().Disconnected()
+        if let Some(obs) = self.observer.get() {
+            let result = unsafe {
+                if self.disconnected {
+                    obs.Disconnected()
+                } else {
+                    obs.Reconnected()
+                }
+            };
+            if result != NS_OK {
+                error!(
+                    "Error notifying disconnected={} : {}",
+                    self.disconnected, result
+                );
             } else {
-                self.observer.get().unwrap().Reconnected()
+                debug!("Notified observer, disconnected={}", self.disconnected);
             }
-        };
-        if result != NS_OK {
-            error!(
-                "Error notifying disconnected={} : {}",
-                self.disconnected, result
-            );
         } else {
-            debug!("Notified observer, disconnected={}", self.disconnected);
+            error!("Failed to get nsISidlConnectionObserver object.");
         }
-    }
-
-    fn done(&self) -> Result<(), nsresult> {
-        Ok(())
     }
 }
 
@@ -189,14 +190,14 @@ impl UdsTransport {
             observers.len()
         );
         observers.for_each(move |observer| {
-            let _ = TaskRunnable::new(
+            let _ = SidlRunnable::new(
                 "ApiDaemonNotifyObservers",
                 Box::new(ConnectionChangeTask {
                     disconnected,
                     observer: observer.clone(),
                 }),
             )
-            .and_then(|r| TaskRunnable::dispatch(r, observer.owning_thread()));
+            .and_then(|r| SidlRunnable::dispatch(r, observer.owning_thread()));
         });
     }
 

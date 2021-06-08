@@ -71,7 +71,6 @@
 #include "mozilla/layers/DirectionUtils.h"  // for GetAxis{Start,End,Length,Scale}
 #include "mozilla/layers/LayerTransactionParent.h"  // for LayerTransactionParent
 #include "mozilla/layers/MetricsSharingController.h"  // for MetricsSharingController
-#include "mozilla/layers/ScrollInputMethods.h"        // for ScrollInputMethod
 #include "mozilla/mozalloc.h"                         // for operator new, etc
 #include "mozilla/Unused.h"                           // for unused
 #include "mozilla/FloatingPoint.h"                    // for FuzzyEquals*
@@ -949,10 +948,6 @@ nsEventStatus AsyncPanZoomController::HandleDragEvent(
   if (aEvent.mType == MouseInput::MouseType::MOUSE_DOWN) {
     APZC_LOG("%p starting scrollbar drag\n", this);
     SetState(SCROLLBAR_DRAG);
-
-    mozilla::Telemetry::Accumulate(
-        mozilla::Telemetry::SCROLL_INPUT_METHODS,
-        (uint32_t)ScrollInputMethod::ApzScrollbarDrag);
   }
 
   if (aEvent.mType != MouseInput::MouseType::MOUSE_MOVE) {
@@ -1228,9 +1223,6 @@ nsEventStatus AsyncPanZoomController::HandleGestureEvent(
 void AsyncPanZoomController::StartAutoscroll(const ScreenPoint& aPoint) {
   // Cancel any existing animation.
   CancelAnimation();
-
-  Telemetry::Accumulate(Telemetry::SCROLL_INPUT_METHODS,
-                        (uint32_t)ScrollInputMethod::ApzAutoscrolling);
 
   SetState(AUTOSCROLL);
   StartAnimation(new AutoscrollAnimation(*this, aPoint));
@@ -1965,36 +1957,7 @@ ParentLayerPoint AsyncPanZoomController::GetScrollWheelDelta(
   return delta;
 }
 
-static void ReportKeyboardScrollAction(const KeyboardScrollAction& aAction) {
-  ScrollInputMethod scrollMethod;
-
-  switch (aAction.mType) {
-    case KeyboardScrollAction::eScrollLine: {
-      scrollMethod = ScrollInputMethod::ApzScrollLine;
-      break;
-    }
-    case KeyboardScrollAction::eScrollCharacter: {
-      scrollMethod = ScrollInputMethod::ApzScrollCharacter;
-      break;
-    }
-    case KeyboardScrollAction::eScrollPage: {
-      scrollMethod = ScrollInputMethod::ApzScrollPage;
-      break;
-    }
-    case KeyboardScrollAction::eScrollComplete: {
-      scrollMethod = ScrollInputMethod::ApzCompleteScroll;
-      break;
-    }
-  }
-
-  mozilla::Telemetry::Accumulate(mozilla::Telemetry::SCROLL_INPUT_METHODS,
-                                 (uint32_t)scrollMethod);
-}
-
 nsEventStatus AsyncPanZoomController::OnKeyboard(const KeyboardInput& aEvent) {
-  // Report the type of scroll action to telemetry
-  ReportKeyboardScrollAction(aEvent.mAction);
-
   // Mark that this APZC has async key scrolled
   mTestHasAsyncKeyScrolled = true;
 
@@ -2311,23 +2274,6 @@ void AsyncPanZoomController::DoDelayedRequestContentRepaint() {
   mPinchPaintTimerSet = false;
 }
 
-static ScrollInputMethod ScrollInputMethodForWheelDeltaType(
-    ScrollWheelInput::ScrollDeltaType aDeltaType) {
-  switch (aDeltaType) {
-    case ScrollWheelInput::SCROLLDELTA_LINE: {
-      return ScrollInputMethod::ApzWheelLine;
-    }
-    case ScrollWheelInput::SCROLLDELTA_PAGE: {
-      return ScrollInputMethod::ApzWheelPage;
-    }
-    case ScrollWheelInput::SCROLLDELTA_PIXEL: {
-      return ScrollInputMethod::ApzWheelPixel;
-    }
-  }
-  MOZ_ASSERT_UNREACHABLE("Invalid value");
-  return ScrollInputMethod::ApzWheelLine;
-}
-
 static void AdjustDeltaForAllowedScrollDirections(
     ParentLayerPoint& aDelta,
     const ScrollDirections& aAllowedScrollDirections) {
@@ -2411,10 +2357,6 @@ nsEventStatus AsyncPanZoomController::OnScrollWheel(
     // Avoid spurious state changes and unnecessary work
     return nsEventStatus_eIgnore;
   }
-
-  mozilla::Telemetry::Accumulate(
-      mozilla::Telemetry::SCROLL_INPUT_METHODS,
-      (uint32_t)ScrollInputMethodForWheelDeltaType(aEvent.mDeltaType));
 
   switch (aEvent.mScrollMode) {
     case ScrollWheelInput::SCROLLMODE_INSTANT: {
@@ -2550,9 +2492,6 @@ nsEventStatus AsyncPanZoomController::OnPanBegin(
   }
 
   StartTouch(aEvent.mLocalPanStartPoint, aEvent.mTimeStamp);
-
-  mozilla::Telemetry::Accumulate(mozilla::Telemetry::SCROLL_INPUT_METHODS,
-                                 (uint32_t)ScrollInputMethod::ApzPanGesture);
 
   if (GetAxisLockMode() == FREE) {
     SetState(PANNING);
@@ -3351,8 +3290,6 @@ nsEventStatus AsyncPanZoomController::StartPanning(
   }
 
   if (IsInPanningState()) {
-    mozilla::Telemetry::Accumulate(mozilla::Telemetry::SCROLL_INPUT_METHODS,
-                                   (uint32_t)ScrollInputMethod::ApzTouch);
     mTouchStartRestingTimeBeforePan = aEventTime - mTouchStartTime;
     mMinimumVelocityDuringPan = Nothing();
 
@@ -5543,6 +5480,7 @@ void AsyncPanZoomController::ZoomToRect(const ZoomTarget& aZoomTarget,
 
     ParentLayerRect compositionBounds = Metrics().GetCompositionBounds();
     CSSRect cssPageRect = Metrics().GetScrollableRect();
+    CSSSize sizeBeforeZoom = Metrics().CalculateCompositedSizeInCssPixels();
     CSSPoint scrollOffset = Metrics().GetVisualScrollOffset();
     // TODO: Need to handle different x-and y-scales.
     CSSToParentLayerScale currentZoom = Metrics().GetZoom().ToScaleFactor();
@@ -5586,28 +5524,10 @@ void AsyncPanZoomController::ZoomToRect(const ZoomTarget& aZoomTarget,
                 (currentZoom == localMinZoom && targetZoom <= localMinZoom);
     }
 
-    FrameMetrics endZoomToMetrics = Metrics();
-    CSSSize sizeBeforeZoom = Metrics().CalculateCompositedSizeInCssPixels();
     if (zoomOut) {
-      // Set our zoom to the min zoom and then calculate what the after-zoom
-      // composited size is, and then calculate the new scroll offset so that we
-      // center what the old composited size displayed.
       targetZoom = localMinZoom;
-      endZoomToMetrics.SetZoom(CSSToParentLayerScale2D(targetZoom));
-
-      CSSSize sizeAfterZoom =
-          endZoomToMetrics.CalculateCompositedSizeInCssPixels();
-
-      rect = CSSRect(
-          scrollOffset.x + (sizeBeforeZoom.width - sizeAfterZoom.width) / 2,
-          scrollOffset.y + (sizeBeforeZoom.height - sizeAfterZoom.height) / 2,
-          sizeAfterZoom.Width(), sizeAfterZoom.Height());
-
-      rect = rect.Intersect(cssPageRect);
     }
 
-    targetZoom.scale =
-        clamped(targetZoom.scale, localMinZoom.scale, localMaxZoom.scale);
     if (aFlags & PAN_INTO_VIEW_ONLY) {
       targetZoom = currentZoom;
     } else if (aFlags & ONLY_ZOOM_TO_DEFAULT_SCALE) {
@@ -5623,12 +5543,28 @@ void AsyncPanZoomController::ZoomToRect(const ZoomTarget& aZoomTarget,
         }
       }
     }
-    endZoomToMetrics.SetZoom(CSSToParentLayerScale2D(targetZoom));
 
-    // Adjust the zoomToRect to a sensible position to prevent overscrolling.
+    targetZoom.scale =
+        clamped(targetZoom.scale, localMinZoom.scale, localMaxZoom.scale);
+
+    FrameMetrics endZoomToMetrics = Metrics();
+    endZoomToMetrics.SetZoom(CSSToParentLayerScale2D(targetZoom));
     CSSSize sizeAfterZoom =
         endZoomToMetrics.CalculateCompositedSizeInCssPixels();
 
+    if (zoomOut) {
+      // With our zoom at the min zoom, calculate what the after-zoom
+      // composited size is, and then calculate the new scroll offset so that we
+      // center what the old composited size displayed.
+      rect = CSSRect(
+          scrollOffset.x + (sizeBeforeZoom.width - sizeAfterZoom.width) / 2,
+          scrollOffset.y + (sizeBeforeZoom.height - sizeAfterZoom.height) / 2,
+          sizeAfterZoom.Width(), sizeAfterZoom.Height());
+
+      rect = rect.Intersect(cssPageRect);
+    }
+
+    // Check if we can fit the full elementBoundingRect.
     if (!zoomOut && aZoomTarget.elementBoundingRect.isSome()) {
       MOZ_ASSERT(aZoomTarget.elementBoundingRect->Contains(rect));
       CSSRect elementBoundingRect =

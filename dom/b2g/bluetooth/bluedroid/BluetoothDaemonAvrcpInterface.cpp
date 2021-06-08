@@ -272,6 +272,50 @@ nsresult BluetoothDaemonAvrcpModule::SetVolumeCmd(
   return NS_OK;
 }
 
+nsresult BluetoothDaemonAvrcpModule::SetAddressedPlayerRspCmd(
+    BluetoothAvrcpStatus aRspStatus, BluetoothAvrcpResultHandler* aRes) {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  UniquePtr<DaemonSocketPDU> pdu =
+      MakeUnique<DaemonSocketPDU>(SERVICE_ID, OPCODE_SET_ADDRESSED_PLAYER_RSP,
+                                  4);  // aRspStatus
+
+  nsresult rv = PackPDU(static_cast<int>(aRspStatus), *pdu);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+  rv = Send(pdu.get(), aRes);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+  Unused << pdu.release();
+  return NS_OK;
+}
+
+nsresult BluetoothDaemonAvrcpModule::GetFolderItemsListRspCmd(
+    BluetoothAvrcpStatus aRspStatus, uint16_t aUidCounter, uint8_t aNumItems,
+    const nsTArray<BluetoothAvrcpItemPlayer>& aPlayers,
+    BluetoothAvrcpResultHandler* aRes) {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  UniquePtr<DaemonSocketPDU> pdu =
+      MakeUnique<DaemonSocketPDU>(SERVICE_ID, OPCODE_GET_FOLDER_ITEMS_LIST_RSP,
+                                  0);  // Dynamically allocated
+
+  nsresult rv = PackPDU(static_cast<int>(aRspStatus), aUidCounter, aNumItems,
+                        aPlayers, *pdu);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  rv = Send(pdu.get(), aRes);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+  Unused << pdu.release();
+  return NS_OK;
+}
+
 // Responses
 //
 
@@ -360,6 +404,22 @@ void BluetoothDaemonAvrcpModule::SetVolumeRsp(
                            UnpackPDUInitOp(aPDU));
 }
 
+void BluetoothDaemonAvrcpModule::SetAddressedPlayerRspRsp(
+    const DaemonSocketPDUHeader& aHeader, DaemonSocketPDU& aPDU,
+    BluetoothAvrcpResultHandler* aRes) {
+  ResultRunnable::Dispatch(aRes,
+                           &BluetoothAvrcpResultHandler::SetAddressedPlayerRsp,
+                           UnpackPDUInitOp(aPDU));
+}
+
+void BluetoothDaemonAvrcpModule::GetFolderItemsListRspRsp(
+    const DaemonSocketPDUHeader& aHeader, DaemonSocketPDU& aPDU,
+    BluetoothAvrcpResultHandler* aRes) {
+  ResultRunnable::Dispatch(aRes,
+                           &BluetoothAvrcpResultHandler::GetFolderItemsListRsp,
+                           UnpackPDUInitOp(aPDU));
+}
+
 void BluetoothDaemonAvrcpModule::HandleRsp(const DaemonSocketPDUHeader& aHeader,
                                            DaemonSocketPDU& aPDU,
                                            DaemonSocketResultHandler* aRes) {
@@ -385,7 +445,12 @@ void BluetoothDaemonAvrcpModule::HandleRsp(const DaemonSocketPDUHeader& aHeader,
           &BluetoothDaemonAvrcpModule::SetPlayerAppValueRspRsp,
       [OPCODE_REGISTER_NOTIFICATION_RSP] =
           &BluetoothDaemonAvrcpModule::RegisterNotificationRspRsp,
-      [OPCODE_SET_VOLUME] = &BluetoothDaemonAvrcpModule::SetVolumeRsp};
+      [OPCODE_SET_VOLUME] = &BluetoothDaemonAvrcpModule::SetVolumeRsp,
+      [OPCODE_SET_ADDRESSED_PLAYER_RSP] =
+          &BluetoothDaemonAvrcpModule::SetAddressedPlayerRspRsp,
+      [OPCODE_GET_FOLDER_ITEMS_LIST_RSP] =
+          &BluetoothDaemonAvrcpModule::GetFolderItemsListRspRsp,
+  };
 
   MOZ_ASSERT(!NS_IsMainThread());  // I/O thread
 
@@ -645,6 +710,61 @@ void BluetoothDaemonAvrcpModule::PassthroughCmdNtf(
       UnpackPDUInitOp(aPDU));
 }
 
+void BluetoothDaemonAvrcpModule::SetAddressedPlayerNtf(
+    const DaemonSocketPDUHeader& aHeader, DaemonSocketPDU& aPDU) {
+  SetAddressedPlayerNotification::Dispatch(
+      &BluetoothAvrcpNotificationHandler::SetAddressedPlayerNotification,
+      UnpackPDUInitOp(aPDU));
+}
+
+// Init operator class for GetFolderItemsNotification
+class BluetoothDaemonAvrcpModule::GetFolderItemsInitOp final
+    : private PDUInitOp {
+ public:
+  explicit GetFolderItemsInitOp(DaemonSocketPDU& aPDU) : PDUInitOp(aPDU) {}
+
+  nsresult operator()(uint8_t& aArg1, uint32_t& aArg2, uint32_t& aArg3,
+                      uint8_t& aArg4, UniquePtr<uint32_t[]>& aArg5) const {
+    DaemonSocketPDU& pdu = GetPDU();
+
+    /* Read scope */
+    nsresult rv = UnpackPDU(pdu, aArg1);
+    if (NS_FAILED(rv)) {
+      return rv;
+    }
+    /* Read start item */
+    rv = UnpackPDU(pdu, aArg2);
+    if (NS_FAILED(rv)) {
+      return rv;
+    }
+    /* Read end item */
+    rv = UnpackPDU(pdu, aArg3);
+    if (NS_FAILED(rv)) {
+      return rv;
+    }
+    /* Read number of attribute ids */
+    rv = UnpackPDU(pdu, aArg4);
+    if (NS_FAILED(rv)) {
+      return rv;
+    }
+
+    /* Read attribute ids */
+    rv = UnpackPDU(pdu, UnpackArray<uint32_t>(aArg5, aArg4));
+    if (NS_FAILED(rv)) {
+      return rv;
+    }
+    WarnAboutTrailingData();
+    return NS_OK;
+  }
+};
+
+void BluetoothDaemonAvrcpModule::GetFolderItemsNtf(
+    const DaemonSocketPDUHeader& aHeader, DaemonSocketPDU& aPDU) {
+  GetFolderItemsNotification::Dispatch(
+      &BluetoothAvrcpNotificationHandler::GetFolderItemsNotification,
+      GetFolderItemsInitOp(aPDU));
+}
+
 void BluetoothDaemonAvrcpModule::HandleNtf(const DaemonSocketPDUHeader& aHeader,
                                            DaemonSocketPDU& aPDU,
                                            DaemonSocketResultHandler* aRes) {
@@ -661,7 +781,11 @@ void BluetoothDaemonAvrcpModule::HandleNtf(const DaemonSocketPDUHeader& aHeader,
       [8] = &BluetoothDaemonAvrcpModule::GetElementAttrNtf,
       [9] = &BluetoothDaemonAvrcpModule::RegisterNotificationNtf,
       [10] = &BluetoothDaemonAvrcpModule::VolumeChangeNtf,
-      [11] = &BluetoothDaemonAvrcpModule::PassthroughCmdNtf};
+      [11] = &BluetoothDaemonAvrcpModule::PassthroughCmdNtf,
+      [12] = &BluetoothDaemonAvrcpModule::SetAddressedPlayerNtf,
+      [13] = nullptr,
+      [14] = &BluetoothDaemonAvrcpModule::GetFolderItemsNtf,
+  };
 
   MOZ_ASSERT(!NS_IsMainThread());
 
@@ -800,6 +924,29 @@ void BluetoothDaemonAvrcpInterface::SetVolume(
   MOZ_ASSERT(mModule);
 
   nsresult rv = mModule->SetVolumeCmd(aVolume, aRes);
+  if (NS_FAILED(rv)) {
+    DispatchError(aRes, rv);
+  }
+}
+
+void BluetoothDaemonAvrcpInterface::SetAddressedPlayerRsp(
+    BluetoothAvrcpStatus aRspStatus, BluetoothAvrcpResultHandler* aRes) {
+  MOZ_ASSERT(mModule);
+
+  nsresult rv = mModule->SetAddressedPlayerRspCmd(aRspStatus, aRes);
+  if (NS_FAILED(rv)) {
+    DispatchError(aRes, rv);
+  }
+}
+
+void BluetoothDaemonAvrcpInterface::GetFolderItemsListRsp(
+    BluetoothAvrcpStatus aRspStatus, uint16_t aUidCounter, uint8_t aNumItems,
+    const nsTArray<BluetoothAvrcpItemPlayer>& aPlayers,
+    BluetoothAvrcpResultHandler* aRes) {
+  MOZ_ASSERT(mModule);
+
+  nsresult rv = mModule->GetFolderItemsListRspCmd(aRspStatus, aUidCounter,
+                                                  aNumItems, aPlayers, aRes);
   if (NS_FAILED(rv)) {
     DispatchError(aRes, rv);
   }

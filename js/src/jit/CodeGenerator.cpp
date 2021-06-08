@@ -995,7 +995,6 @@ void CodeGenerator::visitValueToInt32(LValueToInt32* lir) {
   } else if (lir->mode() == LValueToInt32::TRUNCATE_NOWRAP) {
     auto* ool = new (alloc()) OutOfLineZeroIfNaN(lir, temp, output);
     addOutOfLineCode(ool, lir->mir());
-
     masm.truncateNoWrapValueToInt32(operand, temp, output, ool->entry(),
                                     &fails);
     masm.bind(ool->rejoin());
@@ -6503,6 +6502,7 @@ bool CodeGenerator::generateBody() {
       columnNumber = current->mir()->columnIndex();
 #  endif
     }
+    JitSpew(JitSpew_Codegen, "--------------------------------");
     JitSpew(JitSpew_Codegen, "# block%zu %s:%zu:%u%s:", i,
             filename ? filename : "?", lineNumber, columnNumber,
             current->mir()->isLoopHeader() ? " (loop header)" : "");
@@ -6535,7 +6535,8 @@ bool CodeGenerator::generateBody() {
       }
 
 #ifdef JS_JITSPEW
-      JitSpewStart(JitSpew_Codegen, "# instruction %s", iter->opName());
+      JitSpewStart(JitSpew_Codegen, "                                # LIR=%s",
+                   iter->opName());
       if (const char* extra = iter->getExtraName()) {
         JitSpewCont(JitSpew_Codegen, ":%s", extra);
       }
@@ -7066,7 +7067,7 @@ void CodeGenerator::visitNewPlainObject(LNewPlainObject* lir) {
 
   using Fn =
       JSObject* (*)(JSContext*, HandleShape, gc::AllocKind, gc::InitialHeap);
-  OutOfLineCode* ool = oolCallVM<Fn, NewPlainObject>(
+  OutOfLineCode* ool = oolCallVM<Fn, NewPlainObjectOptimizedFallback>(
       lir,
       ArgList(ImmGCPtr(shape), Imm32(int32_t(allocKind)), Imm32(initialHeap)),
       StoreRegisterTo(objReg));
@@ -7074,7 +7075,8 @@ void CodeGenerator::visitNewPlainObject(LNewPlainObject* lir) {
   masm.movePtr(ImmGCPtr(shape), shapeReg);
   masm.createPlainGCObject(objReg, shapeReg, temp0Reg, temp1Reg,
                            mir->numFixedSlots(), mir->numDynamicSlots(),
-                           allocKind, initialHeap, ool->entry());
+                           allocKind, initialHeap, ool->entry(),
+                           AllocSiteInput(gc::CatchAllAllocSite::Optimized));
 
   masm.bind(ool->rejoin());
 }
@@ -7097,15 +7099,21 @@ void CodeGenerator::visitNewArrayObject(LNewArrayObject* lir) {
 
   const Shape* shape = mir->shape();
 
-  using Fn = ArrayObject* (*)(JSContext*, uint32_t, NewObjectKind);
-  OutOfLineCode* ool = oolCallVM<Fn, NewArrayOperation>(
-      lir, ArgList(Imm32(arrayLength), Imm32(GenericObject)),
+  NewObjectKind objectKind =
+      mir->initialHeap() == gc::TenuredHeap ? TenuredObject : GenericObject;
+
+  using Fn =
+      ArrayObject* (*)(JSContext*, uint32_t, gc::AllocKind, NewObjectKind);
+  OutOfLineCode* ool = oolCallVM<Fn, NewArrayObjectOptimizedFallback>(
+      lir,
+      ArgList(Imm32(arrayLength), Imm32(int32_t(allocKind)), Imm32(objectKind)),
       StoreRegisterTo(objReg));
 
   masm.movePtr(ImmPtr(shape), shapeReg);
-  masm.createArrayWithFixedElements(objReg, shapeReg, temp0Reg, arrayLength,
-                                    arrayCapacity, allocKind,
-                                    mir->initialHeap(), ool->entry());
+  masm.createArrayWithFixedElements(
+      objReg, shapeReg, temp0Reg, arrayLength, arrayCapacity, allocKind,
+      mir->initialHeap(), ool->entry(),
+      AllocSiteInput(gc::CatchAllAllocSite::Optimized));
   masm.bind(ool->rejoin());
 }
 
@@ -8150,34 +8158,35 @@ void CodeGenerator::visitMinMaxArrayD(LMinMaxArrayD* ins) {
   bailoutFrom(&bail, ins->snapshot());
 }
 
+// For Abs*, lowering will have tied input to output on platforms where that is
+// sensible, and otherwise left them untied.
+
 void CodeGenerator::visitAbsI(LAbsI* ins) {
   Register input = ToRegister(ins->input());
-  MOZ_ASSERT(input == ToRegister(ins->output()));
+  Register output = ToRegister(ins->output());
 
-  Label positive;
-  masm.branchTest32(Assembler::NotSigned, input, input, &positive);
   if (ins->mir()->fallible()) {
+    Label positive;
+    if (input != output) {
+      masm.move32(input, output);
+    }
+    masm.branchTest32(Assembler::NotSigned, output, output, &positive);
     Label bail;
-    masm.branchNeg32(Assembler::Overflow, input, &bail);
+    masm.branchNeg32(Assembler::Overflow, output, &bail);
     bailoutFrom(&bail, ins->snapshot());
+    masm.bind(&positive);
   } else {
-    masm.neg32(input);
+    masm.abs32(input, output);
   }
-  masm.bind(&positive);
 }
 
 void CodeGenerator::visitAbsD(LAbsD* ins) {
-  FloatRegister input = ToFloatRegister(ins->input());
-  MOZ_ASSERT(input == ToFloatRegister(ins->output()));
-
-  masm.absDouble(input, input);
+  masm.absDouble(ToFloatRegister(ins->input()), ToFloatRegister(ins->output()));
 }
 
 void CodeGenerator::visitAbsF(LAbsF* ins) {
-  FloatRegister input = ToFloatRegister(ins->input());
-  MOZ_ASSERT(input == ToFloatRegister(ins->output()));
-
-  masm.absFloat32(input, input);
+  masm.absFloat32(ToFloatRegister(ins->input()),
+                  ToFloatRegister(ins->output()));
 }
 
 void CodeGenerator::visitPowII(LPowII* ins) {

@@ -84,7 +84,11 @@
 #include "frontend/Parser.h"
 #include "frontend/SourceNotes.h"  // SrcNote, SrcNoteType, SrcNoteIterator
 #include "gc/PublicIterators.h"
+#ifdef DEBUG
+#  include "irregexp/RegExpAPI.h"
+#endif
 #include "gc/GC-inl.h"  // ZoneCellIter
+
 #ifdef JS_SIMULATOR_ARM
 #  include "jit/arm/Simulator-arm.h"
 #endif
@@ -2549,11 +2553,6 @@ static bool Evaluate(JSContext* cx, unsigned argc, Value* vp) {
         // The CompileOption should discard source as well.
         if (globalOptions.discardSource && !options.discardSource) {
           JS_ReportErrorASCII(cx, "discardSource option mismatch");
-          return false;
-        }
-        if (globalOptions.instrumentationKinds !=
-            options.instrumentationKinds) {
-          JS_ReportErrorASCII(cx, "instrumentationKinds mismatch");
           return false;
         }
       }
@@ -5231,6 +5230,42 @@ static bool SetInterruptCallback(JSContext* cx, unsigned argc, Value* vp) {
   args.rval().setUndefined();
   return true;
 }
+
+#ifdef DEBUG
+// var s0 = "A".repeat(10*1024);
+// interruptRegexp(/a(bc|bd)/, s0);
+// first arg is regexp
+// second arg is string
+static bool InterruptRegexp(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  ShellContext* sc = GetShellContext(cx);
+  RootedObject callee(cx, &args.callee());
+
+  if (args.length() != 2) {
+    ReportUsageErrorASCII(cx, callee, "Wrong number of arguments.");
+    return false;
+  }
+  if (!(args[0].isObject() && args[0].toObject().is<RegExpObject>())) {
+    ReportUsageErrorASCII(cx, callee,
+                          "First argument must be a regular expression.");
+    return false;
+  }
+  if (!args[1].isString()) {
+    ReportUsageErrorASCII(cx, callee, "Second argument must be a String.");
+    return false;
+  }
+  // Set interrupt flags
+  sc->serviceInterrupt = true;
+  js::irregexp::IsolateSetShouldSimulateInterrupt(cx->isolate);
+
+  RootedObject regexp(cx, &args[0].toObject());
+  RootedString string(cx, args[1].toString());
+  int32_t lastIndex = 0;
+
+  return js::RegExpMatcherRaw(cx, regexp, string, lastIndex, nullptr,
+                              args.rval());
+}
+#endif
 
 static bool SetJitCompilerOption(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -9519,7 +9554,11 @@ static const JSFunctionSpecWithHelp shell_functions[] = {
     JS_FN_HELP("setJitCompilerOption", SetJitCompilerOption, 2, 0,
 "setJitCompilerOption(<option>, <number>)",
 "  Set a compiler option indexed in JSCompileOption enum to a number.\n"),
-
+#ifdef DEBUG
+    JS_FN_HELP("interruptRegexp", InterruptRegexp, 2, 0,
+"interruptRegexp(<regexp>, <string>)",
+"  Interrrupt the execution of regular expression.\n"),
+#endif
     JS_FN_HELP("enableLastWarning", EnableLastWarning, 0, 0,
 "enableLastWarning()",
 "  Enable storing the last warning."),
@@ -10197,7 +10236,7 @@ js::shell::AutoReportException::~AutoReportException() {
   MOZ_ASSERT(!report.report()->isWarning());
 
   FILE* fp = ErrorFilePointer();
-  JS::PrintError(cx, fp, report, reportWarnings);
+  JS::PrintError(fp, report, reportWarnings);
   JS_ClearPendingException(cx);
 
   if (!PrintStackTrace(cx, exnStack.stack())) {
@@ -10237,7 +10276,7 @@ void js::shell::WarningReporter(JSContext* cx, JSErrorReport* report) {
   }
 
   // Print the warning.
-  JS::PrintError(cx, fp, report, reportWarnings);
+  JS::PrintError(fp, report, reportWarnings);
 }
 
 static bool global_enumerate(JSContext* cx, JS::HandleObject obj,

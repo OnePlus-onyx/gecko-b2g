@@ -94,6 +94,7 @@
 #include "nsGkAtoms.h"                 // for nsGkAtoms, nsGkAtoms::dir
 #include "nsIClipboard.h"              // for nsIClipboard
 #include "nsIContent.h"                // for nsIContent
+#include "nsIDocumentEncoder.h"        // for nsIDocumentEncoder
 #include "nsIDocumentStateListener.h"  // for nsIDocumentStateListener
 #include "nsIEditActionListener.h"     // for nsIEditActionListener
 #include "nsIEditorObserver.h"         // for nsIEditorObserver
@@ -214,6 +215,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(EditorBase)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mDocStateListeners)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mEventTarget)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mPlaceholderTransaction)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mCachedDocumentEncoder)
   NS_IMPL_CYCLE_COLLECTION_UNLINK_WEAK_REFERENCE
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
@@ -239,6 +241,7 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(EditorBase)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mEventTarget)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mEventListener)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPlaceholderTransaction)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mCachedDocumentEncoder)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(EditorBase)
@@ -1408,6 +1411,142 @@ NS_IMETHODIMP EditorBase::SetDocumentCharacterSet(
   return NS_ERROR_NOT_AVAILABLE;
 }
 
+NS_IMETHODIMP EditorBase::OutputToString(const nsAString& aFormatType,
+                                         uint32_t aDocumentEncoderFlags,
+                                         nsAString& aOutputString) {
+  AutoEditActionDataSetter editActionData(*this, EditAction::eNotEditing);
+  if (NS_WARN_IF(!editActionData.CanHandle())) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  nsresult rv =
+      ComputeValueInternal(aFormatType, aDocumentEncoderFlags, aOutputString);
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "EditorBase::ComputeValueInternal() failed");
+  // This is low level API for XUL application.  So, we should return raw
+  // error code here.
+  return rv;
+}
+
+nsresult EditorBase::ComputeValueInternal(const nsAString& aFormatType,
+                                          uint32_t aDocumentEncoderFlags,
+                                          nsAString& aOutputString) const {
+  MOZ_ASSERT(IsEditActionDataAvailable());
+
+  // First, let's try to get the value simply only from text node if the
+  // caller wants plaintext value.
+  // NOTE: If it's neither <input type="text"> nor <textarea>, e.g., an HTML
+  // editor which is in plaintext mode (e.g., plaintext email composer on
+  // Thunderbird), it should be handled by the expensive path.
+  if (IsTextEditor() && aFormatType.LowerCaseEqualsLiteral("text/plain")) {
+    // If it's necessary to check selection range or the editor wraps hard,
+    // we need some complicated handling.  In such case, we need to use the
+    // expensive path.
+    // XXX Anything else what we cannot return the text node data simply?
+    if (!(aDocumentEncoderFlags & (nsIDocumentEncoder::OutputSelectionOnly |
+                                   nsIDocumentEncoder::OutputWrap))) {
+      EditActionResult result =
+          AsTextEditor()->ComputeValueFromTextNodeAndPaddingBRElement(
+              aOutputString);
+      if (result.Failed() || result.Canceled() || result.Handled()) {
+        NS_WARNING_ASSERTION(
+            result.Succeeded(),
+            "TextEditor::ComputeValueFromTextNodeAndPaddingBRElement() failed");
+        return result.Rv();
+      }
+    }
+  }
+
+  nsAutoCString charset;
+  nsresult rv = GetDocumentCharsetInternal(charset);
+  if (NS_FAILED(rv) || charset.IsEmpty()) {
+    charset.AssignLiteral("windows-1252");  // XXX Why don't we use "UTF-8"?
+  }
+
+  nsCOMPtr<nsIDocumentEncoder> encoder =
+      GetAndInitDocEncoder(aFormatType, aDocumentEncoderFlags, charset);
+  if (!encoder) {
+    NS_WARNING("EditorBase::GetAndInitDocEncoder() failed");
+    return NS_ERROR_FAILURE;
+  }
+
+  rv = encoder->EncodeToString(aOutputString);
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "nsIDocumentEncoder::EncodeToString() failed");
+  return rv;
+}
+
+already_AddRefed<nsIDocumentEncoder> EditorBase::GetAndInitDocEncoder(
+    const nsAString& aFormatType, uint32_t aDocumentEncoderFlags,
+    const nsACString& aCharset) const {
+  MOZ_ASSERT(IsEditActionDataAvailable());
+
+  nsCOMPtr<nsIDocumentEncoder> docEncoder;
+  if (!mCachedDocumentEncoder ||
+      !mCachedDocumentEncoderType.Equals(aFormatType)) {
+    nsAutoCString formatType;
+    LossyAppendUTF16toASCII(aFormatType, formatType);
+    docEncoder = do_createDocumentEncoder(PromiseFlatCString(formatType).get());
+    if (NS_WARN_IF(!docEncoder)) {
+      return nullptr;
+    }
+    mCachedDocumentEncoder = docEncoder;
+    mCachedDocumentEncoderType = aFormatType;
+  } else {
+    docEncoder = mCachedDocumentEncoder;
+  }
+
+  RefPtr<Document> doc = GetDocument();
+  NS_ASSERTION(doc, "Need a document");
+
+  nsresult rv = docEncoder->NativeInit(
+      doc, aFormatType,
+      aDocumentEncoderFlags | nsIDocumentEncoder::RequiresReinitAfterOutput);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("nsIDocumentEncoder::NativeInit() failed");
+    return nullptr;
+  }
+
+  if (!aCharset.IsEmpty() && !aCharset.EqualsLiteral("null")) {
+    DebugOnly<nsresult> rvIgnored = docEncoder->SetCharset(aCharset);
+    NS_WARNING_ASSERTION(
+        NS_SUCCEEDED(rvIgnored),
+        "nsIDocumentEncoder::SetCharset() failed, but ignored");
+  }
+
+  const int32_t wrapWidth = std::max(WrapWidth(), 0);
+  DebugOnly<nsresult> rvIgnored = docEncoder->SetWrapColumn(wrapWidth);
+  NS_WARNING_ASSERTION(
+      NS_SUCCEEDED(rvIgnored),
+      "nsIDocumentEncoder::SetWrapColumn() failed, but ignored");
+
+  // Set the selection, if appropriate.
+  // We do this either if the OutputSelectionOnly flag is set,
+  // in which case we use our existing selection ...
+  if (aDocumentEncoderFlags & nsIDocumentEncoder::OutputSelectionOnly) {
+    if (NS_FAILED(docEncoder->SetSelection(&SelectionRef()))) {
+      NS_WARNING("nsIDocumentEncoder::SetSelection() failed");
+      return nullptr;
+    }
+  }
+  // ... or if the root element is not a body,
+  // in which case we set the selection to encompass the root.
+  else {
+    Element* rootElement = GetRoot();
+    if (NS_WARN_IF(!rootElement)) {
+      return nullptr;
+    }
+    if (!rootElement->IsHTMLElement(nsGkAtoms::body)) {
+      if (NS_FAILED(docEncoder->SetContainerNode(rootElement))) {
+        NS_WARNING("nsIDocumentEncoder::SetContainerNode() failed");
+        return nullptr;
+      }
+    }
+  }
+
+  return docEncoder.forget();
+}
+
 bool EditorBase::AreClipboardCommandsUnconditionallyEnabled() const {
   Document* document = GetDocument();
   return document && document->AreClipboardCommandsUnconditionallyEnabled();
@@ -2245,13 +2384,6 @@ NS_IMETHODIMP EditorBase::RemoveDocumentStateListener(
   mDocStateListeners.RemoveElement(aListener);
 
   return NS_OK;
-}
-
-NS_IMETHODIMP EditorBase::OutputToString(const nsAString& aFormatType,
-                                         uint32_t aFlags,
-                                         nsAString& aOutputString) {
-  // these should be implemented by derived classes.
-  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 bool EditorBase::ArePreservingSelection() {
@@ -4545,7 +4677,28 @@ NS_IMETHODIMP EditorBase::RemoveAttributeOrEquivalent(
   return EditorBase::ToGenericNSResult(rv);
 }
 
+void EditorBase::HandleKeyPressEventInReadOnlyMode(
+    WidgetKeyboardEvent& aKeyboardEvent) const {
+  MOZ_ASSERT(IsReadonly());
+  MOZ_ASSERT(aKeyboardEvent.mMessage == eKeyPress);
+
+  switch (aKeyboardEvent.mKeyCode) {
+    case NS_VK_BACK:
+      // If it's a `Backspace` key, let's consume it because it may be mapped
+      // to "Back" of the history navigation.  So, it's possible that user
+      // tries to delete a character with `Backspace` even in the read-only
+      // editor.
+      aKeyboardEvent.PreventDefault();
+      break;
+  }
+  // XXX How about space key (page up and page down in browser navigation)?
+}
+
 nsresult EditorBase::HandleKeyPressEvent(WidgetKeyboardEvent* aKeyboardEvent) {
+  MOZ_ASSERT(!IsReadonly());
+  MOZ_ASSERT(aKeyboardEvent);
+  MOZ_ASSERT(aKeyboardEvent->mMessage == eKeyPress);
+
   // NOTE: When you change this method, you should also change:
   //   * editor/libeditor/tests/test_texteditor_keyevent_handling.html
   //   * editor/libeditor/tests/test_htmleditor_keyevent_handling.html
@@ -4553,30 +4706,65 @@ nsresult EditorBase::HandleKeyPressEvent(WidgetKeyboardEvent* aKeyboardEvent) {
   // And also when you add new key handling, you need to change the subclass's
   // HandleKeyPressEvent()'s switch statement.
 
-  if (NS_WARN_IF(!aKeyboardEvent)) {
-    return NS_ERROR_UNEXPECTED;
-  }
-  MOZ_ASSERT(aKeyboardEvent->mMessage == eKeyPress,
-             "HandleKeyPressEvent gets non-keypress event");
-
-  // if we are readonly or disabled, then do nothing.
-  if (IsReadonly()) {
-    // consume backspace for disabled and readonly textfields, to prevent
-    // back in history, which could be confusing to users
-    if (aKeyboardEvent->mKeyCode == NS_VK_BACK) {
-      aKeyboardEvent->PreventDefault();
-    }
-    return NS_OK;
-  }
-
   switch (aKeyboardEvent->mKeyCode) {
     case NS_VK_META:
     case NS_VK_WIN:
     case NS_VK_SHIFT:
     case NS_VK_CONTROL:
     case NS_VK_ALT:
-      aKeyboardEvent->PreventDefault();  // consumed
+      MOZ_ASSERT_UNREACHABLE(
+          "eKeyPress event shouldn't be fired for modifier keys");
+      return NS_ERROR_UNEXPECTED;
+
+    case NS_VK_BACK: {
+      if (aKeyboardEvent->IsControl() || aKeyboardEvent->IsAlt() ||
+          aKeyboardEvent->IsMeta() || aKeyboardEvent->IsOS()) {
+        return NS_OK;
+      }
+      DebugOnly<nsresult> rvIgnored =
+          DeleteSelectionAsAction(nsIEditor::ePrevious, nsIEditor::eStrip);
+      aKeyboardEvent->PreventDefault();
+      NS_WARNING_ASSERTION(
+          NS_SUCCEEDED(rvIgnored),
+          "EditorBase::DeleteSelectionAsAction() failed, but ignored");
       return NS_OK;
+    }
+    case NS_VK_DELETE: {
+      // on certain platforms (such as windows) the shift key
+      // modifies what delete does (cmd_cut in this case).
+      // bailing here to allow the keybindings to do the cut.
+      if (aKeyboardEvent->IsShift() || aKeyboardEvent->IsControl() ||
+          aKeyboardEvent->IsAlt() || aKeyboardEvent->IsMeta() ||
+          aKeyboardEvent->IsOS()) {
+        return NS_OK;
+      }
+      DebugOnly<nsresult> rvIgnored =
+          DeleteSelectionAsAction(nsIEditor::eNext, nsIEditor::eStrip);
+      aKeyboardEvent->PreventDefault();
+      NS_WARNING_ASSERTION(
+          NS_SUCCEEDED(rvIgnored),
+          "EditorBase::DeleteSelectionAsAction() failed, but ignored");
+      return NS_OK;
+    }
+    case NS_VK_TAB: {
+      MOZ_ASSERT_IF(IsHTMLEditor(), IsPlaintextEditor());
+      if (IsTabbable()) {
+        return NS_OK;  // let it be used for focus switching
+      }
+
+      if (aKeyboardEvent->IsShift() || aKeyboardEvent->IsControl() ||
+          aKeyboardEvent->IsAlt() || aKeyboardEvent->IsMeta() ||
+          aKeyboardEvent->IsOS()) {
+        return NS_OK;
+      }
+
+      // else we insert the tab straight through
+      aKeyboardEvent->PreventDefault();
+      nsresult rv = OnInputText(u"\t"_ns);
+      NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                           "EditorBase::OnInputText(\\t) failed");
+      return rv;
+    }
   }
   return NS_OK;
 }

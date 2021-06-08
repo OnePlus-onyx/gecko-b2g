@@ -17,12 +17,14 @@ The <web-view> element supports the following attributes:
 - `disableCursor() : void` : disables the virtual cursor.
 - `download(uri) : init download.
 - `enableCursor() : void` : enables the virtual cursor.
+- `enterModalState() : void` : Set into a state where scripts are frozen and events suppressed.
 - `focus() : void` : focuses the browser.
 - `getBackgroundColor() : Promise<String>`: returns the CSS value of the page's background color.
 - `getCursorEnabled() : Promise<boolean>` : query whether the virtual cursor is enabled.
 - `getScreenshot(max_width, max_height, mime_type) : Promise<Blob>` : takes a screenshot of the current page.
 - `goForward() : void` : navigates one step forwared in the history.
 - `goBack() : void` : navigates one step back in the history.
+- `leaveModalState() : void` : Resume normal state where scripts can run and events are delivered.
 - `reload(forced) : void` : reload the patch, bypassing the cache if `forced` is true.
 - `scrollToTop(smooth = true) : void` : scrolls to the top of the document.
 - `scrollToBottom(smooth = true) : void` : scrolls to the bottom of the document.
@@ -82,3 +84,5 @@ All events are CustomEvents, with an event payload specific to each type.
 - `securitychange` : `{ state: string, mixedState: string, extendedValidation: boolean, mixedContent: boolean }`
 - `titlechange` : `{ title: string }`
 - `visibilitychange` : `{ visible: boolean }`
+- `httponmodifyrequest` : `{ uri: string, host: string }`
+  - dispatched when the <web-view> element starts loading a main document.

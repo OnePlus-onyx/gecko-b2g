@@ -100,7 +100,6 @@ STATIC_ATOMS = [
     Atom("ancestor", "ancestor"),
     Atom("ancestorOrSelf", "ancestor-or-self"),
     Atom("anchor", "anchor"),
-    Atom("anchortoclosest", "anchortoclosest"),
     Atom("_and", "and"),
     Atom("animations", "animations"),
     Atom("anonid", "anonid"),
@@ -1996,6 +1995,7 @@ STATIC_ATOMS = [
     Atom("https", "https"),
     Atom("proxy", "proxy"),
     Atom("privateBrowsingAllowedPermission", "internal:privateBrowsingAllowed"),
+    Atom("svgContextPropertiesAllowedPermission", "internal:svgContextPropertiesAllowed"),
     # CSS Counter Styles
     Atom("decimal_leading_zero", "decimal-leading-zero"),
     Atom("arabic_indic", "arabic-indic"),

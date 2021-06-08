@@ -47,7 +47,6 @@
 #include "vm/EqualityOperations.h"  // js::StrictlyEqual
 #include "vm/FunctionFlags.h"       // js::FunctionFlags
 #include "vm/GeneratorObject.h"
-#include "vm/Instrumentation.h"
 #include "vm/Iteration.h"
 #include "vm/JSAtom.h"
 #include "vm/JSContext.h"
@@ -4389,31 +4388,6 @@ static MOZ_NEVER_INLINE JS_HAZ_JSNATIVE_CALLER bool Interpret(JSContext* cx,
     CASE(BigInt) { PUSH_BIGINT(script->getBigInt(REGS.pc)); }
     END_CASE(BigInt)
 
-    CASE(InstrumentationActive) {
-      ReservedRooted<Value> rval(&rootValue0);
-      if (!InstrumentationActiveOperation(cx, &rval)) {
-        goto error;
-      }
-      PUSH_COPY(rval);
-    }
-    END_CASE(InstrumentationActive)
-
-    CASE(InstrumentationCallback) {
-      JSObject* obj = InstrumentationCallbackOperation(cx);
-      MOZ_ASSERT(obj);
-      PUSH_OBJECT(*obj);
-    }
-    END_CASE(InstrumentationCallback)
-
-    CASE(InstrumentationScriptId) {
-      ReservedRooted<Value> rval(&rootValue0);
-      if (!InstrumentationScriptIdOperation(cx, script, &rval)) {
-        goto error;
-      }
-      PUSH_COPY(rval);
-    }
-    END_CASE(InstrumentationScriptId)
-
     DEFAULT() {
       char numBuf[12];
       SprintfLiteral(numBuf, "%d", *REGS.pc);
@@ -5042,11 +5016,21 @@ JSObject* js::NewObjectOperationWithTemplate(JSContext* cx,
   return CopyTemplateObject(cx, templateObject.as<PlainObject>(), newKind);
 }
 
-JSObject* js::NewPlainObject(JSContext* cx, HandleShape shape,
-                             gc::AllocKind allocKind,
-                             gc::InitialHeap initialHeap) {
+JSObject* js::NewPlainObjectBaselineFallback(JSContext* cx, HandleShape shape,
+                                             gc::AllocKind allocKind,
+                                             gc::AllocSite* site) {
   MOZ_ASSERT(shape->getObjectClass() == &PlainObject::class_);
-  auto r = NativeObject::create(cx, allocKind, initialHeap, shape);
+  gc::InitialHeap initialHeap = site->initialHeap();
+  auto r = NativeObject::create(cx, allocKind, initialHeap, shape, site);
+  return cx->resultToPtr(r);
+}
+
+JSObject* js::NewPlainObjectOptimizedFallback(JSContext* cx, HandleShape shape,
+                                              gc::AllocKind allocKind,
+                                              gc::InitialHeap initialHeap) {
+  MOZ_ASSERT(shape->getObjectClass() == &PlainObject::class_);
+  gc::AllocSite* site = cx->zone()->optimizedAllocSite();
+  auto r = NativeObject::create(cx, allocKind, initialHeap, shape, site);
   return cx->resultToPtr(r);
 }
 
@@ -5066,6 +5050,35 @@ ArrayObject* js::NewArrayOperation(
     JSContext* cx, uint32_t length,
     NewObjectKind newKind /* = GenericObject */) {
   return NewDenseFullyAllocatedArray(cx, length, nullptr, newKind);
+}
+
+ArrayObject* js::NewArrayObjectBaselineFallback(JSContext* cx, uint32_t length,
+                                                gc::AllocKind allocKind,
+                                                gc::AllocSite* site) {
+  NewObjectKind newKind =
+      site->initialHeap() == gc::TenuredHeap ? TenuredObject : GenericObject;
+  ArrayObject* array =
+      NewDenseFullyAllocatedArray(cx, length, nullptr, newKind, site);
+  // It's important that we allocate an object with the alloc kind we were
+  // expecting so that a new arena gets allocated if the current arena for that
+  // kind is full.
+  MOZ_ASSERT_IF(array && array->isTenured(),
+                array->asTenured().getAllocKind() == allocKind);
+  return array;
+}
+
+ArrayObject* js::NewArrayObjectOptimizedFallback(JSContext* cx, uint32_t length,
+                                                 gc::AllocKind allocKind,
+                                                 NewObjectKind newKind) {
+  gc::AllocSite* site = cx->zone()->optimizedAllocSite();
+  ArrayObject* array =
+      NewDenseFullyAllocatedArray(cx, length, nullptr, newKind, site);
+  // It's important that we allocate an object with the alloc kind we were
+  // expecting so that a new arena gets allocated if the current arena for that
+  // kind is full.
+  MOZ_ASSERT_IF(array && array->isTenured(),
+                array->asTenured().getAllocKind() == allocKind);
+  return array;
 }
 
 void js::ReportRuntimeLexicalError(JSContext* cx, unsigned errorNumber,

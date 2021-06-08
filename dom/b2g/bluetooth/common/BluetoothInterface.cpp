@@ -435,6 +435,13 @@ void BluetoothAvrcpNotificationHandler::VolumeChangeNotification(
 void BluetoothAvrcpNotificationHandler::PassthroughCmdNotification(
     uint8_t aId, uint8_t aKeyState) {}
 
+void BluetoothAvrcpNotificationHandler::SetAddressedPlayerNotification(
+    uint16_t aPlayerId) {}
+
+void BluetoothAvrcpNotificationHandler::GetFolderItemsNotification(
+    uint8_t aScope, uint32_t aStartItem, uint32_t aEndItem, uint8_t aNumAttr,
+    const uint32_t* aAttrIds) {}
+
 // Result handling
 //
 
@@ -461,6 +468,10 @@ void BluetoothAvrcpResultHandler::SetPlayerAppValueRsp() {}
 void BluetoothAvrcpResultHandler::RegisterNotificationRsp() {}
 
 void BluetoothAvrcpResultHandler::SetVolume() {}
+
+void BluetoothAvrcpResultHandler::SetAddressedPlayerRsp() {}
+
+void BluetoothAvrcpResultHandler::GetFolderItemsListRsp() {}
 
 // Interface
 //

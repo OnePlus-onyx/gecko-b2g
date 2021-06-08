@@ -3183,7 +3183,7 @@ BrowserGlue.prototype = {
   _migrateUI: function BG__migrateUI() {
     // Use an increasing number to keep track of the current migration state.
     // Completely unrelated to the current Firefox release number.
-    const UI_VERSION = 109;
+    const UI_VERSION = 111;
     const BROWSER_DOCURL = AppConstants.BROWSER_CHROME_URL;
 
     if (!Services.prefs.prefHasUserValue("browser.migration.version")) {
@@ -3639,12 +3639,11 @@ BrowserGlue.prototype = {
 
       if (!userCustomizedWheelMin && !userCustomizedWheelMax) {
         // If the user has an existing profile but hasn't customized the wheel
-        // animation duration, indicate that they need to be migrated to the new
-        // values by setting their "migration complete" percentage to 0.
-        Services.prefs.setIntPref(
-          "general.smoothScroll.mouseWheel.migrationPercent",
-          0
-        );
+        // animation duration, they will now get the new default values. This
+        // condition used to set a migrationPercent pref to 0, so that users
+        // upgrading an older profile would gradually have their wheel animation
+        // speed migrated to the new values. However, that "gradual migration"
+        // was phased out by FF 86, so we don't need to set that pref anymore.
       } else if (userCustomizedWheelMin && !userCustomizedWheelMax) {
         // If they customized just one of the two, save the old value for the
         // other one as well, because the two values go hand-in-hand and we
@@ -3664,8 +3663,8 @@ BrowserGlue.prototype = {
         );
       } else {
         // The last remaining case is if they customized both values, in which
-        // case also we leave the "migration complete" percentage at 100, as no
-        // further migration is needed.
+        // case also don't need to do anything; the user's customized values
+        // will be retained and respected.
       }
     }
 
@@ -3797,6 +3796,18 @@ BrowserGlue.prototype = {
         //Then clear user pref
         Services.prefs.clearUserPref("signon.recipes.remoteRecipesEnabled");
       }
+    }
+
+    if (currentUIVersion < 110) {
+      // Update Urlbar result buckets to add support for
+      // RESULT_GROUP.INPUT_HISTORY.
+      UrlbarPrefs.migrateResultBuckets();
+    }
+
+    if (currentUIVersion < 111) {
+      // Update Urlbar result buckets to add support for
+      // RESULT_GROUP.REMOTE_TABS.
+      UrlbarPrefs.migrateResultBuckets();
     }
 
     // Update the migration version.

@@ -261,6 +261,9 @@ class ResourceCommand {
    */
   async _watchAllTargets() {
     if (!this._watchTargetsPromise) {
+      // If this is the very first listener registered, of all kind of resource types:
+      // * we want to start observing targets via TargetCommand
+      // * _onTargetAvailable will be called for each already existing targets and the next one to come
       this._watchTargetsPromise = this.targetCommand.watchTargets(
         this.targetCommand.ALL_TYPES,
         this._onTargetAvailable,
@@ -284,6 +287,37 @@ class ResourceCommand {
       this._onTargetAvailable,
       this._onTargetDestroyed
     );
+  }
+
+  /**
+   * For a given resource type, start the legacy listeners for all already existing targets.
+   * Do that only if we have to. If this resourceType requires legacy listeners.
+   */
+  async _startLegacyListenersForExistingTargets(resourceType) {
+    // If we were already listening to targets, we want to start the legacy listeners
+    // for all already existing targets.
+    const shouldRunLegacyListeners =
+      !this.hasResourceCommandSupport(resourceType) ||
+      this._shouldRunLegacyListenerEvenWithWatcherSupport(resourceType);
+    if (shouldRunLegacyListeners) {
+      const promises = [];
+      const targets = this.targetCommand.getAllTargets(
+        this.targetCommand.ALL_TYPES
+      );
+      for (const targetFront of targets) {
+        // We disable warning in case we already registered the legacy listener for this target
+        // as this code may race with the call from onTargetAvailable if we end up having multiple
+        // calls to _startListening in parallel.
+        promises.push(
+          this._watchResourcesForTarget({
+            targetFront,
+            resourceType,
+            disableWarning: true,
+          })
+        );
+      }
+      await Promise.all(promises);
+    }
   }
 
   /**
@@ -346,7 +380,7 @@ class ResourceCommand {
         // ...request existing resource and new one to come from this one target
         // *but* only do that for backward compat, where we don't have the watcher API
         // (See bug 1626647)
-        await this._watchResourcesForTarget(targetFront, resourceType);
+        await this._watchResourcesForTarget({ targetFront, resourceType });
       }
     }
 
@@ -382,6 +416,33 @@ class ResourceCommand {
           })
         )
       );
+    }
+
+    // @backward-compat { version 91 } DOCUMENT_EVENT's will-navigate start being notified,
+    //                                 to replace target actor's will-navigate event
+    // In the meantime fake a DOCUMENT_EVENT's will-navigate out of target actor's will-navigate.
+    // We should keep this code until we support the watcher actor for all descriptors (bug 1675763).
+    if (
+      !this.targetCommand.hasTargetWatcherSupport(
+        "supportsDocumentEventWillNavigate"
+      )
+    ) {
+      const offWillNavigate2 = targetFront.on(
+        "will-navigate",
+        ({ url, isFrameSwitching }) => {
+          targetFront.emit("resource-available-form", [
+            {
+              resourceType: this.TYPES.DOCUMENT_EVENT,
+              name: "will-navigate",
+              time: Date.now(), // will-navigate was not passing any timestamp
+              shouldBeIgnoredAsRedundantWithTargetAvailable: false,
+              isFrameSwitching,
+              newURI: url,
+            },
+          ]);
+        }
+      );
+      this._offTargetFrontListeners.push(offWillNavigate2);
     }
   }
 
@@ -427,6 +488,7 @@ class ResourceCommand {
    *        which describes the resource.
    */
   async _onResourceAvailable({ targetFront, watcherFront }, resources) {
+    let includesDocumentEventWillNavigate = false;
     for (let resource of resources) {
       const { resourceType } = resource;
 
@@ -455,11 +517,25 @@ class ResourceCommand {
         });
       }
 
+      if (
+        resourceType == ResourceCommand.TYPES.DOCUMENT_EVENT &&
+        resource.name == "will-navigate"
+      ) {
+        includesDocumentEventWillNavigate = true;
+      }
+
       this._queueResourceEvent("available", resourceType, resource);
 
       this._cache.push(resource);
     }
-    this._throttledNotifyWatchers();
+    // If we receive the DOCUMENT_EVENT for will-navigate,
+    // flush immediately the resources in order to notify about the navigation sooner than later.
+    // (this is especially useful for tests, even if they should probably avoid depending on this...)
+    if (includesDocumentEventWillNavigate) {
+      this._notifyWatchers();
+    } else {
+      this._throttledNotifyWatchers();
+    }
   }
 
   /**
@@ -736,27 +812,6 @@ class ResourceCommand {
 
     this._processingExistingResources.add(resourceType);
 
-    const shouldRunLegacyListeners =
-      !this.hasResourceCommandSupport(resourceType) ||
-      this._shouldRunLegacyListenerEvenWithWatcherSupport(resourceType);
-    if (shouldRunLegacyListeners) {
-      // If this is the very first listener registered, of all kind of resource types:
-      // 1) TargetCommand may not be initialized yet, so that targetCommand.getAllTargets will return an empty array
-      // 2) The following call to watchAllTargets will process all existing targets when it will call onTargetAvailable
-      //
-      // So this code is meant for all but the very first registered listener of all kinds.
-      // TargetCommand will already be watching for targets and the following call to watchAllTargets will be a no-op.
-      // So that we have to manually process all existing targets here.
-      const promises = [];
-      const targets = this.targetCommand.getAllTargets(
-        this.targetCommand.ALL_TYPES
-      );
-      for (const target of targets) {
-        promises.push(this._watchResourcesForTarget(target, resourceType));
-      }
-      await Promise.all(promises);
-    }
-
     // Ensuring enabling listening to targets.
     // This will be a no-op expect for the very first call to `_startListening`,
     // where it is going to call `onTargetAvailable` for all already existing targets,
@@ -764,7 +819,13 @@ class ResourceCommand {
     //
     // Do this *before* calling WatcherActor.watchResources in order to register "resource-available"
     // listeners on targets before these events start being emitted.
-    await this._watchAllTargets();
+    await this._watchAllTargets(resourceType);
+
+    // When we are calling _startListening for the first time, _watchAllTargets
+    // will register legacylistener when it will call onTargetAvailable for all existing targets.
+    // But for any next calls to _startListening, _watchAllTargets will be a no-op,
+    // and nothing will start legacy listener for each already registered targets.
+    await this._startLegacyListenersForExistingTargets(resourceType);
 
     // If the server supports the Watcher API and the Watcher supports
     // this resource type, use this API
@@ -808,7 +869,11 @@ class ResourceCommand {
    * Call backward compatibility code from `LegacyListeners` in order to listen for a given
    * type of resource from a given target.
    */
-  async _watchResourcesForTarget(targetFront, resourceType) {
+  async _watchResourcesForTarget({
+    targetFront,
+    resourceType,
+    disableWarning = false,
+  }) {
     if (this._hasResourceCommandSupportForTarget(resourceType, targetFront)) {
       // This resource / target pair should already be handled by the watcher,
       // no need to start legacy listeners.
@@ -830,9 +895,11 @@ class ResourceCommand {
     const legacyListeners =
       this._existingLegacyListeners.get(targetFront) || [];
     if (legacyListeners.includes(resourceType)) {
-      console.warn(
-        `Already started legacy listener for ${resourceType} on ${targetFront.actorID}`
-      );
+      if (!disableWarning) {
+        console.warn(
+          `Already started legacy listener for ${resourceType} on ${targetFront.actorID}`
+        );
+      }
       return;
     }
     this._existingLegacyListeners.set(
@@ -1034,6 +1101,8 @@ const LegacyListeners = {
 const ResourceTransformers = {
   [ResourceCommand.TYPES
     .CONSOLE_MESSAGE]: require("devtools/shared/commands/resource/transformers/console-messages"),
+  [ResourceCommand.TYPES
+    .DOCUMENT_EVENT]: require("devtools/shared/commands/resource/transformers/document-events"),
   [ResourceCommand.TYPES
     .ERROR_MESSAGE]: require("devtools/shared/commands/resource/transformers/error-messages"),
   [ResourceCommand.TYPES

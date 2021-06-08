@@ -66,14 +66,6 @@ var testSpec = protocol.generateActorSpec({
   typeName: "test",
 
   methods: {
-    getNumberOfElementMatches: {
-      request: {
-        selector: Arg(0, "string"),
-      },
-      response: {
-        value: RetVal("number"),
-      },
-    },
     getHighlighterAttribute: {
       request: {
         nodeID: Arg(0, "string"),
@@ -138,18 +130,6 @@ var testSpec = protocol.generateActorSpec({
         value: RetVal("json"),
       },
     },
-    synthesizeMouse: {
-      request: {
-        object: Arg(0, "json"),
-      },
-      response: {},
-    },
-    synthesizeKey: {
-      request: {
-        args: Arg(0, "json"),
-      },
-      response: {},
-    },
     scrollIntoView: {
       request: {
         args: Arg(0, "string"),
@@ -185,23 +165,6 @@ var testSpec = protocol.generateActorSpec({
       },
       response: {
         value: RetVal("json"),
-      },
-    },
-    setProperty: {
-      request: {
-        selector: Arg(0, "string"),
-        property: Arg(1, "string"),
-        value: Arg(2, "string"),
-      },
-      response: {},
-    },
-    getProperty: {
-      request: {
-        selector: Arg(0, "string"),
-        property: Arg(1, "string"),
-      },
-      response: {
-        value: RetVal("string"),
       },
     },
     reload: {
@@ -362,13 +325,6 @@ var TestActor = protocol.ActorClassWithSpec(testSpec, {
     }
     return node;
   },
-  /**
-   * Helper to get the number of elements matching a selector
-   * @param {string} CSS selector.
-   */
-  getNumberOfElementMatches: function(selector, root = this.content.document) {
-    return root.querySelectorAll(selector).length;
-  },
 
   /**
    * Get a value for a given attribute name, on one of the elements of the box
@@ -508,54 +464,6 @@ var TestActor = protocol.ActorClassWithSpec(testSpec, {
   },
 
   /**
-   * Get the window which mouse events on node should be delivered to.
-   */
-  windowForMouseEvent: function(node) {
-    return node.ownerDocument.defaultView;
-  },
-
-  /**
-   * Synthesize a mouse event on an element, after ensuring that it is visible
-   * in the viewport. This handler doesn't send a message back. Consumers
-   * should listen to specific events on the inspector/highlighter to know when
-   * the event got synthesized.
-   * @param {String} selector The node selector to get the node target for the event
-   * @param {Number} x
-   * @param {Number} y
-   * @param {Boolean} center If set to true, x/y will be ignored and
-   *                  synthesizeMouseAtCenter will be used instead
-   * @param {Object} options Other event options
-   */
-  synthesizeMouse: function({ selector, x, y, center, options }) {
-    const node = this._querySelector(selector);
-    node.scrollIntoView();
-    if (center) {
-      EventUtils.synthesizeMouseAtCenter(
-        node,
-        options,
-        this.windowForMouseEvent(node)
-      );
-    } else {
-      EventUtils.synthesizeMouse(
-        node,
-        x,
-        y,
-        options,
-        this.windowForMouseEvent(node)
-      );
-    }
-  },
-
-  /**
-   * Synthesize a key event for an element. This handler doesn't send a message
-   * back. Consumers should listen to specific events on the inspector/highlighter
-   * to know when the event got synthesized.
-   */
-  synthesizeKey: function({ key, options, content }) {
-    EventUtils.synthesizeKey(key, options, this.content);
-  },
-
-  /**
    * Scroll an element into view.
    * @param {String} selector The selector for the node to scroll into view.
    */
@@ -622,28 +530,6 @@ var TestActor = protocol.ActorClassWithSpec(testSpec, {
       bottom: rect.bottom,
       left: rect.left,
     };
-  },
-
-  /**
-   * Set a JS property on a DOM Node.
-   * @param {String} selector The node selector
-   * @param {String} property The property name
-   * @param {String} value The attribute value
-   */
-  setProperty: function(selector, property, value) {
-    const node = this._querySelector(selector);
-    node[property] = value;
-  },
-
-  /**
-   * Get a JS property on a DOM Node.
-   * @param {String} selector The node selector
-   * @param {String} property The property name
-   * @return {String} value The attribute value
-   */
-  getProperty: function(selector, property) {
-    const node = this._querySelector(selector);
-    return node[property];
   },
 
   /**
